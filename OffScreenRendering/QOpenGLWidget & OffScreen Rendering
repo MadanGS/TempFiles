@@ -1,0 +1,229 @@
+To move the calculation operations to a separate thread in a Qt application, you can create a custom worker thread by subclassing `QThread`. Below is an example of how you can modify the previous example to move the offscreen rendering calculations to a separate thread.
+
+```cpp
+#include <QThread>
+#include <QMutex>
+#include <QWaitCondition>
+
+class OffscreenRenderer : public QThread
+{
+    Q_OBJECT
+
+public:
+    OffscreenRenderer(QObject *parent = nullptr) : QThread(parent), fbo(nullptr)
+    {
+        initializeOpenGLFunctions();
+        moveToThread(this); // Move the entire thread to its own thread
+    }
+
+    void run() override
+    {
+        // Create a local OpenGL context for the thread
+        QOpenGLContext threadContext;
+        threadContext.setFormat(QSurfaceFormat::defaultFormat());
+        threadContext.create();
+        threadContext.moveToThread(this);
+
+        // Make the local context current
+        threadContext.makeCurrent(nullptr);
+
+        // Set up the offscreen FBO
+        setupFramebufferObject();
+
+        // Perform offscreen rendering (e.g., color manipulation)
+        renderOffscreen();
+
+        // Release resources
+        threadContext.doneCurrent();
+    }
+
+    QOpenGLFramebufferObject* getFramebufferObject() const
+    {
+        return fbo;
+    }
+
+private:
+    QOpenGLFramebufferObject* fbo;
+
+    void setupFramebufferObject()
+    {
+        // Create an FBO for offscreen rendering
+        fbo = new QOpenGLFramebufferObject(512, 512, QOpenGLFramebufferObject::Attachment::CombinedDepthStencil);
+
+        if (!fbo->isValid()) {
+            qWarning("Framebuffer object is not valid");
+            delete fbo;
+            fbo = nullptr;
+        }
+    }
+
+    void renderOffscreen()
+    {
+        if (!fbo)
+            return;
+
+        // Bind the FBO for rendering
+        fbo->bind();
+
+        // Perform offscreen rendering (color manipulation) using shaders
+        renderWithShader();
+
+        // Release the FBO
+        fbo->release();
+    }
+
+    void renderWithShader()
+    {
+        // ... (same as in the previous example)
+    }
+};
+
+class OffscreenRenderingWidget : public QOpenGLWidget
+{
+    Q_OBJECT
+
+public:
+    OffscreenRenderingWidget(QWidget *parent = nullptr) : QOpenGLWidget(parent), offscreenRenderer(nullptr)
+    {
+        initializeOpenGLFunctions();
+    }
+
+    ~OffscreenRenderingWidget()
+    {
+        if (offscreenRenderer) {
+            offscreenRenderer->terminate(); // Terminate the thread gracefully
+            offscreenRenderer->wait();      // Wait for the thread to finish
+            delete offscreenRenderer;
+        }
+    }
+
+protected:
+    void initializeGL() override
+    {
+        // Create and start the offscreen rendering thread
+        offscreenRenderer = new OffscreenRenderer(this);
+        offscreenRenderer->start();
+
+        // Wait for the thread to finish its initialization
+        offscreenRenderer->wait();
+
+        // Perform any other OpenGL-related initialization
+        // ...
+    }
+
+    void paintEvent(QPaintEvent *event) override
+    {
+        Q_UNUSED(event);
+
+        // Draw the offscreen-rendered texture on the main screen
+        drawTexture();
+    }
+
+private:
+    OffscreenRenderer* offscreenRenderer;
+
+    void drawTexture()
+    {
+        if (!offscreenRenderer || !offscreenRenderer->getFramebufferObject())
+            return;
+
+        // Draw the offscreen-rendered texture onto the main screen
+
+        // Set up the main screen
+        glViewport(0, 0, width(), height());
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        // Use a simple shader for drawing the texture
+        // This shader just passes through the texture without any manipulation
+        const char *vertexShaderSource = R"(
+            #version 330 core
+            layout (location = 0) in vec2 position;
+            out vec2 TexCoords;
+            void main()
+            {
+                gl_Position = vec4(position, 0.0, 1.0);
+                TexCoords = position;
+            }
+        )";
+
+        const char *fragmentShaderSource = R"(
+            #version 330 core
+            in vec2 TexCoords;
+            out vec4 FragColor;
+            uniform sampler2D screenTexture;
+            void main()
+            {
+                FragColor = texture(screenTexture, TexCoords);
+            }
+        )";
+
+        GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
+        glShaderSource(vertexShader, 1, &vertexShaderSource, nullptr);
+        glCompileShader(vertexShader);
+
+        GLuint fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(fragmentShader, 1, &fragmentShaderSource, nullptr);
+        glCompileShader(fragmentShader);
+
+        GLuint shaderProgram = glCreateProgram();
+        glAttachShader(shaderProgram, vertexShader);
+        glAttachShader(shaderProgram, fragmentShader);
+        glLinkProgram(shaderProgram);
+
+        glDeleteShader(vertexShader);
+        glDeleteShader(fragmentShader);
+
+        glUseProgram(shaderProgram);
+
+        // Set up the texture uniform
+        glUniform1i(glGetUniformLocation(shaderProgram, "screenTexture"), 0);
+
+        // Draw a quad (two triangles) to cover the whole screen
+        GLfloat vertices[] = {
+            -1.0f, -1.0f,
+             1.0f, -1.0f,
+            -1.0f,  1.0f,
+             1.0f,  1.0f
+        };
+
+        GLuint VAO, VBO;
+        glGenVertexArrays(1, &VAO);
+        glGenBuffers(1, &VBO);
+
+        glBindVertexArray(VAO);
+
+        glBindBuffer(GL_ARRAY_BUFFER, VBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(GLfloat), (GLvoid*)0);
+        glEnableVertexAttribArray(0);
+
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glBindVertexArray(0);
+
+        // Bind the offscreen-rendered texture to texture unit 0
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, offscreenRenderer->getFramebufferObject()->texture());
+
+        // Draw the quad
+        glBindVertexArray(VAO);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glBindVertexArray(0);
+
+        // Cleanup
+        glDeleteVertexArrays(1, &VAO);
+        glDeleteBuffers(1, &VBO);
+        glDeleteProgram(shaderProgram);
+    }
+};
+```
+
+In this example:
+
+- `OffscreenRenderer` is a worker thread that performs offscreen rendering calculations. It is subclassed from `QThread` and moves itself to its own thread.
+- The main widget, `OffscreenRenderingWidget`, creates an instance of `OffscreenRenderer` during its initialization and starts the offscreen rendering thread.
+
+Note: Moving the entire thread to its own thread (`moveToThread(this)`) can be done in the constructor of `OffscreenRenderer`. This is often done to ensure that the entire thread's execution, including the `run` method, is in the designated thread. In this example, it's important to make the local OpenGL context current in the new thread (`threadContext.makeCurrent(nullptr)`) to perform OpenGL operations.
+
+Please adapt the code according

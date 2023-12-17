@@ -1,0 +1,82 @@
+Certainly! If you want to avoid using the deprecated `GL/glu.h` functions, you can perform the matrix transformations manually. Here's an updated version of the code using modern OpenGL and without relying on `GL/glu.h`:
+
+```cpp
+#include <QOpenGLWidget>
+#include <QMouseEvent>
+#include <QMatrix4x4>
+#include <QVector3D>
+
+class OpenGLWidget : public QOpenGLWidget
+{
+public:
+    OpenGLWidget(QWidget *parent = nullptr) : QOpenGLWidget(parent) {}
+
+protected:
+    void initializeGL() override {
+        initializeOpenGLFunctions();
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    }
+
+    void resizeGL(int w, int h) override {
+        glViewport(0, 0, w, h);
+        projection.setToIdentity();
+        projection.perspective(45.0, static_cast<double>(w) / static_cast<double>(h), 0.1, 100.0);
+    }
+
+    void paintGL() override {
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        // Draw your OpenGL scene here
+        // ...
+
+        swapBuffers();
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override {
+        QPoint cursorPos = event->pos();
+
+        QVector3D screenPos(cursorPos.x(), height() - cursorPos.y(), 0.0);
+
+        // Unproject the screen position to world coordinates
+        QVector3D worldPos = unproject(screenPos);
+
+        // Assuming you have a reference point or camera position
+        QVector3D cameraPosition(0.0, 0.0, 5.0); // Adjust this according to your scene
+
+        QVector3D distanceVector = worldPos - cameraPosition;
+
+        // Calculate the range (distance) in kilometers
+        double rangeInKilometers = distanceVector.length() / 1000.0;
+
+        // Use or display the range as needed
+        qDebug("Range: %.2f kilometers", rangeInKilometers);
+
+        // Update the display or perform other actions based on the range
+        update();
+    }
+
+private:
+    QMatrix4x4 projection;
+
+    QVector3D unproject(const QVector3D &screenPos) {
+        // Get the modelview matrix
+        QMatrix4x4 modelview;
+        modelview.setToIdentity();
+        modelview.translate(0.0, 0.0, -5.0); // Adjust this according to your scene
+
+        // Combine the projection and modelview matrices
+        QMatrix4x4 viewProjection = projection * modelview;
+
+        // Invert the combined matrix
+        QMatrix4x4 invertedMatrix = viewProjection.inverted();
+
+        // Unproject the screen position to world coordinates
+        QVector4D worldPosHomogeneous = invertedMatrix.map(QVector4D(screenPos, 1.0));
+        QVector3D worldPos = worldPosHomogeneous.toVector3D() / worldPosHomogeneous.w();
+
+        return worldPos;
+    }
+};
+```
+
+This code uses the `QMatrix4x4` class to handle matrix operations and avoids the use of `GL/glu.h` functions. The `unproject` function manually performs the unprojection, and the rest of the code remains similar to the previous example. Adjust the camera and scene setup according to your specific requirements.
