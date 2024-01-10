@@ -1,0 +1,185 @@
+In OpenGL, compute shaders operate independently of the traditional graphics pipeline. However, if you want to share data between a compute shader and the vertex/fragment shaders in the graphics pipeline, you can use buffer objects. Specifically, you can use a Shader Storage Buffer Object (SSBO) to store data that is accessible by both compute shaders and other shader stages in the pipeline.
+
+Here's a modified example that includes an SSBO to share data between a compute shader and a fragment shader:
+
+```cpp
+#include <QOpenGLWidget>
+#include <QOpenGLFunctions>
+#include <QOpenGLShaderProgram>
+#include <QOpenGLShader>
+#include <QTimer>
+
+class OpenGLWidget : public QOpenGLWidget, protected QOpenGLFunctions
+{
+    Q_OBJECT
+
+public:
+    OpenGLWidget(QWidget *parent = nullptr)
+        : QOpenGLWidget(parent)
+    {
+        timer = new QTimer(this);
+        connect(timer, &QTimer::timeout, this, &OpenGLWidget::updateColorBuffer);
+        timer->start(1000); // Set the timer interval in milliseconds
+    }
+
+protected:
+    void initializeGL() override
+    {
+        initializeOpenGLFunctions();
+
+        // Create and initialize a color buffer on the GPU
+        glGenBuffers(1, &colorBuffer);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, colorBuffer);
+
+        // Assuming RGBA format and 256x256 size for simplicity
+        int bufferSize = 256 * 256 * 4 * sizeof(GLubyte);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, bufferSize, nullptr, GL_DYNAMIC_DRAW);
+
+        // Bind the buffer to the shader storage buffer binding point
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, colorBuffer);
+
+        // Load compute shader program
+        createComputeShaderProgram();
+
+        // Dispatch compute shader to initialize color buffer
+        dispatchComputeShader();
+    }
+
+    void paintGL() override
+    {
+        // Use a vertex/fragment shader program to render a quad with colors
+        renderQuadWithColorBuffer();
+    }
+
+    void updateColorBuffer()
+    {
+        // Dispatch compute shader to update color buffer
+        dispatchComputeShader();
+
+        // Update the OpenGL widget
+        update();
+    }
+
+private:
+    GLuint colorBuffer;
+    QTimer *timer;
+
+    QOpenGLShaderProgram *computeShaderProgram;
+    QOpenGLShaderProgram *renderShaderProgram;
+
+    void createComputeShaderProgram()
+    {
+        computeShaderProgram = new QOpenGLShaderProgram(this);
+
+        // Compute shader source code
+        const char *computeShaderSource =
+            "#version 430 core\n"
+            "layout(set = 0, binding = 0, r32ui) buffer ColorBuffer\n"
+            "{\n"
+            "    uint data[];\n"
+            "};\n"
+            "void main()\n"
+            "{\n"
+            "    // Calculate global ID in the buffer\n"
+            "    uint id = gl_GlobalInvocationID.x;\n"
+            "    // Decrement color value by a certain amount (adjust as needed)\n"
+            "    data[id] = max(data[id] - 10, 0u);\n"
+            "}\n";
+
+        // Compile compute shader
+        QOpenGLShader *computeShader = new QOpenGLShader(QOpenGLShader::Compute, this);
+        computeShader->compileSourceCode(computeShaderSource);
+
+        // Attach and link shaders into a program
+        computeShaderProgram->addShader(computeShader);
+        computeShaderProgram->link();
+
+        // Check for compute shader program linking errors
+        if (!computeShaderProgram->isLinked()) {
+            qDebug() << "Compute shader program linking failed:" << computeShaderProgram->log();
+        }
+
+        // Release shader resources
+        delete computeShader;
+    }
+
+    void renderQuadWithColorBuffer()
+    {
+        if (!renderShaderProgram) {
+            renderShaderProgram = new QOpenGLShaderProgram(this);
+
+            // Vertex shader source code
+            const char *vertexShaderSource =
+                "#version 330 core\n"
+                "layout (location = 0) in vec4 position;\n"
+                "out vec4 vertexColor;\n"
+                "void main()\n"
+                "{\n"
+                "    gl_Position = position;\n"
+                "    vertexColor = vec4(1.0, 1.0, 1.0, 1.0); // Default color, modify as needed\n"
+                "}\0";
+
+            // Fragment shader source code
+            const char *fragmentShaderSource =
+                "#version 330 core\n"
+                "in vec4 vertexColor;\n"
+                "out vec4 FragColor;\n"
+                "void main()\n"
+                "{\n"
+                "    FragColor = vertexColor;\n"
+                "}\0";
+
+            // Compile vertex shader
+            QOpenGLShader *vertexShader = new QOpenGLShader(QOpenGLShader::Vertex, this);
+            vertexShader->compileSourceCode(vertexShaderSource);
+
+            // Compile fragment shader
+            QOpenGLShader *fragmentShader = new QOpenGLShader(QOpenGLShader::Fragment, this);
+            fragmentShader->compileSourceCode(fragmentShaderSource);
+
+            // Attach and link shaders into a program
+            renderShaderProgram->addShader(vertexShader);
+            renderShaderProgram->addShader(fragmentShader);
+            renderShaderProgram->link();
+
+            // Check for shader program linking errors
+            if (!renderShaderProgram->isLinked()) {
+                qDebug() << "Render shader program linking failed:" << renderShaderProgram->log();
+            }
+
+            // Release shader resources
+            delete vertexShader;
+            delete fragmentShader;
+        }
+
+        // Use render shader program
+        renderShaderProgram->bind();
+
+        // Draw the quad using the color buffer
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, colorBuffer);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+        // Release the render shader program
+        renderShaderProgram->release();
+    }
+
+    void dispatchComputeShader()
+    {
+        // Use compute shader program
+        computeShaderProgram->bind();
+
+        // Dispatch the compute shader with one work group
+        glDispatchCompute(1, 1, 1);
+
+        // Make sure all memory writes are visible to subsequent OpenGL commands
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+        // Release the compute shader program
+        computeShaderProgram->release();
+    }
+};
+```
+
+In this example, the compute shader modifies the color buffer, and then the vertex and fragment shaders use that color buffer to render a quad. Note that the renderShaderProgram uses a default color for each vertex, but you can modify it to use the values from the color buffer as needed.
+
+Make sure to adapt this code to your specific requirements and consider the synchronization and memory coherence requirements for your use case.
